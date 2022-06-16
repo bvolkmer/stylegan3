@@ -5,7 +5,7 @@
 # and any modifications thereto.  Any use, reproduction, disclosure or
 # distribution of this software and related documentation without an express
 # license agreement from NVIDIA CORPORATION is strictly prohibited.
-
+import datetime
 import sys
 import copy
 import traceback
@@ -17,6 +17,10 @@ import matplotlib.cm
 import dnnlib
 from torch_utils.ops import upfirdn2d
 import legacy # pylint: disable=import-error
+
+from training import networks_stylegan3
+import extensions
+from collections import OrderedDict
 
 #----------------------------------------------------------------------------
 
@@ -126,7 +130,7 @@ class Renderer:
         self._is_timing     = False
         self._start_event   = torch.cuda.Event(enable_timing=True)
         self._end_event     = torch.cuda.Event(enable_timing=True)
-        self._net_layers    = dict()    # {cache_key: [dnnlib.EasyDict, ...], ...}
+        self._net_layers    = OrderedDict()    # {cache_key: [dnnlib.EasyDict, ...], ...}
 
     def render(self, **args):
         self._is_timing = True
@@ -242,9 +246,26 @@ class Renderer:
         fft_beta        = 8,
         input_transform = None,
         untransform     = False,
+        scaling_layer      = None,
+        scaling_channel_min = -1,
+        scaling_channel_max = -1,
+        scaling_factor = 0.,
     ):
         # Dig up network details.
-        G = self.get_network(pkl, 'G_ema')
+        orig_G = self.get_network(pkl, 'G_ema')
+
+        ###########################################
+        # bvolkmer: Extension to scaling particular channels after given layer
+        # TODO: Works only for stylegan3
+        G = copy.deepcopy(orig_G)
+        if scaling_layer is not None and scaling_layer not in ["input", "output"] and scaling_channel_min != -1:  # TODO: does not work for input layer
+            _layer = extensions.ChannelScalingLayer(G.synthesis, scaling_layer,
+                                                    channels=list(range(scaling_channel_min, scaling_channel_max + 1)),
+                                                    factor=scaling_factor)
+            extensions.insert_layer(G, _layer, scaling_layer, f"Scaling")
+        # end extensions
+        ###########################################
+
         res.img_resolution = G.img_resolution
         res.num_ws = G.num_ws
         res.has_noise = any('noise_const' in name for name, _buf in G.synthesis.named_buffers())
@@ -291,13 +312,21 @@ class Renderer:
         out, layers = self.run_synthesis_net(G.synthesis, w, capture_layer=layer_name, **synthesis_kwargs)
 
         # Update layer list.
-        cache_key = (G.synthesis, tuple(sorted(synthesis_kwargs.items())))
+        cache_size = 10
+        cache_key = (orig_G.synthesis, tuple(sorted(synthesis_kwargs.items())))
+        if scaling_layer is not None and scaling_layer not in ["input", "output"] and scaling_channel_min != -1:
+            cache_key = tuple([*cache_key, scaling_layer, scaling_channel_min, scaling_channel_max, scaling_factor])
         if cache_key not in self._net_layers:
+            if len(self._net_layers) > cache_size:
+                self._net_layers.popitem(last=False)
             if layer_name is not None:
                 torch.manual_seed(random_seed)
                 _out, layers = self.run_synthesis_net(G.synthesis, w, **synthesis_kwargs)
             self._net_layers[cache_key] = layers
-        res.layers = self._net_layers[cache_key]
+        else:
+            layers = self._net_layers.pop(cache_key)
+            self._net_layers[cache_key] = layers
+        res.layers = layers
 
         # Untransform.
         if untransform and res.has_input_transform:
@@ -330,11 +359,19 @@ class Renderer:
             sig = sig - sig.mean(dim=[1,2], keepdim=True)
             sig = sig * torch.kaiser_window(sig.shape[1], periodic=False, beta=fft_beta, device=self._device)[None, :, None]
             sig = sig * torch.kaiser_window(sig.shape[2], periodic=False, beta=fft_beta, device=self._device)[None, None, :]
-            fft = torch.fft.fftn(sig, dim=[1,2]).abs().square().sum(dim=0)
-            fft = fft.roll(shifts=[fft.shape[0] // 2, fft.shape[1] // 2], dims=[0,1])
-            fft = (fft / fft.mean()).log10() * 10 # dB
-            fft = self._apply_cmap((fft / fft_range_db + 1) / 2)
-            res.image = torch.cat([img.expand_as(fft), fft], dim=1)
+            fft = torch.fft.fftn(sig, dim=[1,2])
+            fft_r  = fft.real
+            fft_i  = fft.imag
+            fft_r = fft_r.abs().square().sum(dim=0)
+            fft_r = fft_r.roll(shifts=[fft_r.shape[0] // 2, fft_r.shape[1] // 2], dims=[0,1])
+            fft_r = (fft_r / fft_r.mean()).log10() * 10 # dB
+            fft_r = self._apply_cmap((fft_r / fft_range_db + 1) / 2)
+            fft_i = fft_i.angle().square().sum(dim=0)
+            fft_i = fft_i.roll(shifts=[fft_i.shape[0] // 2, fft_i.shape[1] // 2], dims=[0,1])
+            fft_i = (fft_i / fft_i.mean()).log10() * 10 # dB
+            fft_i = self._apply_cmap((fft_i / fft_range_db + 1) / 2)
+            res.image = torch.cat([img.expand_as(fft_r), fft_r], dim=1)
+            #res.image = torch.cat([fft_i], dim=1)
 
     @staticmethod
     def run_synthesis_net(net, *args, capture_layer=None, **kwargs): # => out, layers
