@@ -114,6 +114,8 @@ python visualizer.py
 ```
 
 <a href="./docs/visualizer_screen0.png"><img alt="Visualizer screenshot" src="./docs/visualizer_screen0_half.png"></img></a>
+  
+An explanation of the extension for scaling layers: https://youtu.be/_euFoyLEyqU?t=820
 
 ## Using networks from Python
 
