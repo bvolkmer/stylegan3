@@ -1,3 +1,10 @@
+## Modifications
+
+The visualizer was extended to allow scaling of responses of specific layers and channels to analyse their influence on the final image.
+ 
+An explanation can be found in this video: https://youtu.be/_euFoyLEyqU?t=820
+
+
 ## Alias-Free Generative Adversarial Networks (StyleGAN3)<br><sub>Official PyTorch implementation of the NeurIPS 2021 paper</sub>
 
 ![Teaser image](./docs/stylegan3-teaser-1920x1006.png)
@@ -114,8 +121,6 @@ python visualizer.py
 ```
 
 <a href="./docs/visualizer_screen0.png"><img alt="Visualizer screenshot" src="./docs/visualizer_screen0_half.png"></img></a>
-  
-An explanation of the extension for scaling layers: https://youtu.be/_euFoyLEyqU?t=820
 
 ## Using networks from Python
 
